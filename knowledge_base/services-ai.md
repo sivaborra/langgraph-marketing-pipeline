@@ -1,0 +1,1 @@
+Example Consulting services in AI: RAG and local inference with Ollama and vLLM, LangGraph orchestration for agent workflows, and keeping models local where possible, with larger models only where the job is hard enough to need them.

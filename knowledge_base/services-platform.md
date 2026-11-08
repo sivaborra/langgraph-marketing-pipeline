@@ -1,0 +1,1 @@
+Example Consulting services in platforms: Containers and Kubernetes and Docker for deployment, and data platforms and reporting for business applications. Deployment includes checkpoints, human approval before publish, and logs and cost metrics for every run.

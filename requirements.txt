@@ -1,0 +1,11 @@
+# Pinned to the versions the pipeline was built and verified against
+# (Python 3.12, October–November 2026). Newer versions may work but
+# have not been tested here.
+langgraph==1.2.18
+langgraph-checkpoint-sqlite==3.1.2
+langchain-core==1.7.3
+fastapi==0.162.0
+uvicorn==0.54.0
+python-pptx==1.0.2
+pydantic==2.14.2
+typing_extensions==4.16.0

@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# Pipeline run state — regenerable, never commit
+outputs/
+published/
+runs/
+checkpoints/
+*.db
+*.db-wal
+*.db-shm
+
+# Local config
+.env
+
+# OS / editors
+.DS_Store
+.vscode/
+.idea/

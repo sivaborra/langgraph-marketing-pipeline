@@ -1,0 +1,1 @@
+Example Consulting guides organisations through their AI journey, deploying AI agents safely. Example Consulting is not a freelancer. Its work is domain-agnostic, with safety, human approval and measured evidence before anything is deployed or published.
