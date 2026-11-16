@@ -15,10 +15,10 @@ on:
         type: string
 
 engine:
-  id: claude
+  id: codex
   model: anthropic/claude-sonnet-5.5
   env:
-    ANTHROPIC_BASE_URL: https://openrouter.ai/api/v1
+    OPENAI_BASE_URL: https://openrouter.ai/api/v1
 
 # Each manual dispatch gets its own conclusion slot (avoids two
 # dispatches sharing one concurrency group).
@@ -55,7 +55,7 @@ safe-outputs:
 
 Run the marketing content pipeline for one goal + audience, exactly as the LangGraph version does — planner, researcher, writer, deck, eval gate — and open a draft pull request. A human merges the PR; that merge is the approval. Nothing publishes here.
 
-This is the same flow as `marketing-draft`, but the agent runs on Claude (Sonnet 5.5) routed through OpenRouter's Anthropic-compatible endpoint instead of GitHub Copilot. Use it when Copilot's inference endpoint is failing (e.g. repeated `502 Upstream request failed` from the Copilot harness). The model is billed on the OpenRouter account, not on GitHub AI credits.
+This is the same flow as `marketing-draft`, but the agent runs on the Codex engine pointed at OpenRouter's OpenAI-compatible endpoint, using Claude Sonnet 5.5 as the model, instead of GitHub Copilot. Use it when Copilot's inference endpoint is failing (e.g. repeated `502 Upstream request failed` from the Copilot harness). The model is billed on the OpenRouter account, not on GitHub AI credits.
 
 This repo's pipeline (see README.md "How it works" and `src/marketing_pipeline/graph.py`) is: planner (outline, 4-6 items) → researcher (retrieve top-3 docs from `knowledge_base/`, synthesise) → writer (draft with a numeric citation on every factual sentence) → deck (one slide per outline item) → evals (9 checks in code, max 2 attempts) → human approve → local publish. This workflow is the same flow on GitHub. What does not port: LangGraph checkpointing and mid-graph interrupts (a crashed run restarts; state lives in the PR), the FastAPI app, and local Ollama inference on GitHub-hosted runners.
 
@@ -95,4 +95,4 @@ This repo's pipeline (see README.md "How it works" and `src/marketing_pipeline/g
 
 - Run `gh aw compile` to generate the GitHub Actions workflow (`.lock.yml`).
 - The sibling workflow `marketing-publish` runs when a draft PR merges and moves the draft to `published/<run-id>/`.
-- Engine note: this workflow runs Claude (Sonnet 5.5) through OpenRouter — `ANTHROPIC_BASE_URL` points at `https://openrouter.ai/api/v1`. It needs the repo secret `ANTHROPIC_API_KEY` whose VALUE is the OpenRouter key (that is the variable the Claude engine reads). Set it with `gh aw secrets set ANTHROPIC_API_KEY --value "<openrouter-key>"`. The default Copilot workflow is `marketing-draft`.
+- Engine note: this workflow runs Codex through OpenRouter — `OPENAI_BASE_URL` points at `https://openrouter.ai/api/v1` and the model `anthropic/claude-sonnet-5.5` passes through unchanged. It needs the repo secret `OPENAI_API_KEY` whose VALUE is the OpenRouter key (that is the variable the Codex engine reads). Set it with `gh secret set OPENAI_API_KEY --repo sivaborra/langgraph-marketing-pipeline` (value from stdin). Why Codex and not the Claude engine: the gh-aw proxy strips the `anthropic/` provider prefix when forwarding Anthropic-format requests, so OpenRouter received bare `claude-sonnet-5.5` and 404'd (run 43973792007). The OpenAI-compatible endpoint keeps the full model id. The default Copilot workflow is `marketing-draft`.
