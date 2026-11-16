@@ -119,7 +119,8 @@ knowledge_base/           sample docs (swap in your own)
 exercises/                Phase 1 toy graphs — state, edges, checkpoints,
                           interrupts, streaming, subgraphs, a FastAPI toy
 docs/                     mock Q&A, eval validation, architecture diagrams
-scripts/                  run_all.sh (all Phase 1 exercises), smoke_ex7.sh
+scripts/                  run_all.sh (all Phase 1 exercises), smoke_ex7.sh,
+                          eval_draft.py (standalone 9-check eval gate for gh-aw)
 Dockerfile                python:3.12-slim, uvicorn on :8000
 requirements.txt          pinned to the versions this was verified against
 ```
@@ -134,6 +135,18 @@ the original company's real marketing documents, which stay private; the
 code itself contains no client material. The architecture diagrams
 (`docs/architecture-diagrams.pdf`) and the mock Q&A (`docs/`) describe the
 design decisions and the failure modes found along the way.
+
+## Agentic workflows (GitHub)
+
+The repo also demos the same ideas as GitHub Agentic Workflows (`gh-aw`): automation written as a Markdown file in `.github/workflows/`, compiled with `gh aw compile` into a locked Actions workflow.
+
+- **Issue triage** (`.github/workflows/issue-triage.md`, compiled `.lock.yml`): on a new issue, an agent classifies it (bug / enhancement / documentation / question), checks open issues for duplicates, and posts one triage comment — type, priority, evidence quoted from the issue, duplicate or "none found", and a proposed next step. Labels come only from a fixed allowed list (max 3); if the issue is missing what triage needs, the agent asks the specific questions and applies no labels; if there is nothing actionable at all it does nothing (`noop`). The agent job is read-only — every write goes through checked safe-outputs. No one is auto-assigned; a human decides.
+- **Same pipeline, ported to gh-aw:** the marketing flow itself now runs as GitHub Agentic Workflows, built and compiled on AIBeast (see `.github/workflows/`):
+  - `marketing-draft` (manual trigger with goal + audience): plan → research the top-3 `knowledge_base/` docs → write the draft with numeric citations → build the deck → run the eval gate (`scripts/eval_draft.py`, the same 9 checks as the LangGraph version, max 2 attempts) → open a draft PR under `drafts/<run-id>/`. Merging the PR is the approval.
+  - `marketing-publish` (runs when a draft PR merges): moves the approved draft to `published/<run-id>/` via a publish PR. Local publish only — nothing is posted anywhere external.
+  - The gate is validated, not just written: on AIBeast it passes a real published run 9/9 (run-c9622ffc, citation coverage 0.818) and fails a sabotaged draft (citations stripped) with exit 1.
+  - What does not port 1:1 is LangGraph's checkpointing and mid-graph interrupts (a crashed gh-aw run restarts; state lives in the PR), the FastAPI app, and local Ollama inference on GitHub-hosted runners. LangGraph is the state machine; gh-aw is triggers + agent + safe outputs, with state living in the repo (issues, PRs, artifacts).
+- **Running on local Ollama instead of Copilot:** yes, and at zero token cost — but only on a self-hosted runner, because GitHub-hosted runners cannot reach a local Ollama server. Two verified routes: (1) Copilot CLI BYOK — set `COPILOT_PROVIDER_BASE_URL` to the Ollama OpenAI-compatible endpoint (`http://localhost:11434/v1`); (2) the `opencode` engine with `OPENAI_BASE_URL` pointed at Ollama, on a `self-hosted` Linux runner (GitHub Next's own `githubnext/self-hosted-aw` demo runs Qwen via Ollama exactly this way). **Do not attach a self-hosted runner to a public repository** — a fork PR could execute code on your machine. The Ollama variant belongs on a private repo or a local test run; this public repo's workflow uses the Copilot engine, which needs a Copilot licence (or `COPILOT_GITHUB_TOKEN`).
 
 ## License
 
