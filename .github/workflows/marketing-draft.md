@@ -53,7 +53,7 @@ This repo's pipeline (see README.md "How it works" and `src/marketing_pipeline/g
 
 ## Instructions
 
-1. Read the run inputs: goal and audience come from the workflow_dispatch inputs. Generate a run id `run-<8 lowercase hex chars>` and use it everywhere below.
+1. Read the run inputs (injected below from the workflow_dispatch inputs — do NOT ask for them, they are right here): goal is `${{ inputs.goal }}` and audience is `${{ inputs.audience }}`. Generate a run id `run-<8 lowercase hex chars>` and use it everywhere below.
 2. **Plan.** Write an outline for the goal: objective, audience, services (use ONLY the services listed in `knowledge_base/` — never invent a service, never name a client), channel mix, KPIs (must include "draft ready for human review (not published)" and "0 banned claims"), and an outline of 4-6 items. Outline items are slide headlines: short, at most 45 characters each, headline-style.
 3. **Research.** Read the markdown docs in `knowledge_base/` and pick the top 3 most relevant to the plan. Write 3-5 short bullet lines summarising ONLY what those docs say, each starting with its source file name. Do not add facts, clients, numbers or claims that are not in the docs. If a doc does not cover a point, say so instead of inventing it.
 4. **Write.** Write the blog draft in markdown under `drafts/<run-id>/draft.md`, following the outline and using ONLY the research. Rules, all mandatory:
