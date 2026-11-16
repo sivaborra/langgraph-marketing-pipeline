@@ -1,6 +1,6 @@
 ---
 name: marketing-draft-openrouter
-description: Run the marketing pipeline (plan, research, write, deck, eval gate) and open a draft PR, using GPT-OSS 120B (free) via OpenRouter instead of GitHub Copilot. Fallback when Copilot's inference endpoint is down. Nothing publishes without a human merging the PR.
+description: Run the marketing pipeline (plan, research, write, deck, eval gate) and open a draft PR, using GPT-5 nano (cheapest paid model) via OpenRouter instead of GitHub Copilot. Fallback when Copilot's inference endpoint is down. Nothing publishes without a human merging the PR.
 
 on:
   workflow_dispatch:
@@ -16,7 +16,7 @@ on:
 
 engine:
   id: codex
-  model: openai/gpt-oss-120b:free
+  model: openai/gpt-5-nano
   env:
     OPENAI_BASE_URL: https://openrouter.ai/api/v1
 
@@ -55,7 +55,7 @@ safe-outputs:
 
 Run the marketing content pipeline for one goal + audience, exactly as the LangGraph version does — planner, researcher, writer, deck, eval gate — and open a draft pull request. A human merges the PR; that merge is the approval. Nothing publishes here.
 
-This is the same flow as `marketing-draft`, but the agent runs on the Codex engine pointed at OpenRouter's OpenAI-compatible endpoint, using GPT-OSS 120B (free tier) as the model, instead of GitHub Copilot. Use it when Copilot's inference endpoint is failing (e.g. repeated `502 Upstream request failed` from the Copilot harness — three failures on 16 Nov 2026). The model costs nothing on OpenRouter's free tier.
+This is the same flow as `marketing-draft`, but the agent runs on the Codex engine pointed at OpenRouter's OpenAI-compatible endpoint, using GPT-5 nano as the model, instead of GitHub Copilot. Use it when Copilot's inference endpoint is failing (e.g. repeated `502 Upstream request failed` from the Copilot harness — three failures on 16 Nov 2026). The model is OpenRouter's cheapest paid model, so a run costs a few cents at most.
 
 This repo's pipeline (see README.md "How it works" and `src/marketing_pipeline/graph.py`) is: planner (outline, 4-6 items) → researcher (retrieve top-3 docs from `knowledge_base/`, synthesise) → writer (draft with a numeric citation on every factual sentence) → deck (one slide per outline item) → evals (9 checks in code, max 2 attempts) → human approve → local publish. This workflow is the same flow on GitHub. What does not port: LangGraph checkpointing and mid-graph interrupts (a crashed run restarts; state lives in the PR), the FastAPI app, and local Ollama inference on GitHub-hosted runners.
 
@@ -95,4 +95,4 @@ This repo's pipeline (see README.md "How it works" and `src/marketing_pipeline/g
 
 - Run `gh aw compile` to generate the GitHub Actions workflow (`.lock.yml`).
 - The sibling workflow `marketing-publish` runs when a draft PR merges and moves the draft to `published/<run-id>/`.
-- Engine note: this workflow runs Codex through OpenRouter — `OPENAI_BASE_URL` points at `https://openrouter.ai/api/v1`, model `openai/gpt-oss-120b:free`. It needs the repo secret `OPENAI_API_KEY` whose VALUE is the OpenRouter key. Set it with `gh secret set OPENAI_API_KEY --repo sivaborra/langgraph-marketing-pipeline` (value from stdin). Why the free model: the paid GPT-5.1 attempt (run 43976171194) proved the plumbing works — the request reached OpenRouter with model `gpt-5.1` resolved exactly — but OpenRouter answered 402: the key could only afford 4,958 tokens at GPT-5.1's price (about $0.05 of credit left, or a low per-key limit; see the key's settings in the OpenRouter dashboard to top up or raise the limit). The free GPT-OSS model costs $0, so the run cannot 402. Why not Claude Sonnet 5.5: the gh-aw proxy strips the `anthropic/` prefix so OpenRouter 404'd the bare name (run 43973792007); the Codex engine refuses any non-`openai` model prefix at startup (run 43974452524); and the compiler rejects model ids with two slashes, so `openai/anthropic/claude-sonnet-5.5` cannot even compile. The default Copilot workflow is `marketing-draft`.
+- Engine note: this workflow runs Codex through OpenRouter — `OPENAI_BASE_URL` points at `https://openrouter.ai/api/v1`, model `openai/gpt-5-nano`. It needs the repo secret `OPENAI_API_KEY` whose VALUE is the OpenRouter key. Set it with `gh secret set OPENAI_API_KEY --repo sivaborra/langgraph-marketing-pipeline` (value from stdin). Why nano: the paid GPT-5.1 attempt (run 43976171194) proved the plumbing works — the request reached OpenRouter with model `gpt-5.1` resolved exactly — but OpenRouter answered 402: the key could only afford 4,958 tokens at GPT-5.1's $10/M output price (about $0.05 of credit left, or a low per-key limit; top up or raise the limit in the OpenRouter dashboard to use bigger models). A free model would dodge the 402, but the compiler rejects `:` in model ids, so `openai/gpt-oss-120b:free` cannot compile. Nano's output price is $0.40/M, so the same 65,536-token reservation costs $0.026 — inside the remaining credit. Why not Claude Sonnet 5.5: the gh-aw proxy strips the `anthropic/` prefix so OpenRouter 404'd the bare name (run 43973792007); the Codex engine refuses any non-`openai` model prefix at startup (run 43974452524); and the compiler rejects model ids with two slashes, so `openai/anthropic/claude-sonnet-5.5` cannot even compile. The default Copilot workflow is `marketing-draft`.
