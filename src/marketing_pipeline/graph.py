@@ -34,14 +34,10 @@ Run:
 """
 
 import json
-import math
-import os
 import re
-import time
-import urllib.request
-import shutil
 import sqlite3
-import urllib.error
+import urllib
+import time
 from typing_extensions import TypedDict
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -50,65 +46,16 @@ from .config import (
     BRAND_NAME,
     CHECKPOINT_DB,
     EMBED_MODEL,
-    KNOWLEDGE_BASE_DIR,
-    NUM_CTX,
-    OLLAMA_BASE_URL,
     PLANNER_MODEL,
-    SAMPLE_DOCS,
     SERVICES,
     SYNTH_MODEL,
     WRITER_MODEL,
 )
-
-PLANNER_MODEL = "qwen3:14b"
-SYNTH_MODEL = "qwen3:8b"
-WRITER_MODEL = "qwen3:14b"  # writer first: local 14b, per the model-per-node mapping
-EMBED_MODEL = "bge-m3"
-DOCS_DIR = KNOWLEDGE_BASE_DIR
-DOCS_PREFIX = KNOWLEDGE_BASE_DIR.rstrip("/") + "/"
-
-def _post(path, payload, timeout=600):
-    req = urllib.request.Request(
-        OLLAMA_BASE_URL + path, data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        raise RuntimeError(f"Ollama {path} HTTP {e.code}: {e.read().decode()[:500]}")
-
-
-def _generate(model, prompt):
-    data = _post("/api/generate", {
-        "model": model, "prompt": prompt, "stream": False,
-        "options": {"temperature": 0, "num_ctx": NUM_CTX}, "think": False})
-    return data
-
-
-def _embed(text):
-    data = _post("/api/embeddings", {"model": EMBED_MODEL, "prompt": text})
-    return data["embedding"]
-
-
-def _cosine(a, b):
-    dot = sum(x * y for x, y in zip(a, b))
-    na = math.sqrt(sum(x * x for x in a))
-    nb = math.sqrt(sum(y * y for y in b))
-    return dot / (na * nb) if na and nb else 0.0
-
-
-def _ensure_knowledge_base():
-    """Create the knowledge base from the bundled samples on first run.
-
-    If the directory already holds .md files they are left untouched:
-    drop your own brand docs in and the pipeline retrieves over them.
-    """
-    os.makedirs(DOCS_DIR, exist_ok=True)
-    if any(n.endswith(".md") for n in os.listdir(DOCS_DIR)):
-        return
-    for name, text in SAMPLE_DOCS.items():
-        with open(os.path.join(DOCS_DIR, name), "w", encoding="utf-8") as f:
-            f.write(text + "\n")
+from .deck import _deck_slide_bodies, build_deck
+from .llm import _generate
+from .retrieve import DOCS_PREFIX, retrieve
+from .rules import BANNED_PHRASES, PII_PATTERNS, planner_prompt, synthesis_prompt, writer_prompt
+from .store import publish
 
 
 # ---- Planner (unchanged from Step 2) ----
@@ -160,24 +107,7 @@ def _extract_json(text):
 def planner_node(state: MarketingState):
     goal, audience = state["goal"], state["audience"]
     wanted = state.get("inputs", {}).get("services", SERVICES)
-    prompt = (
-        f"You are the planner for {BRAND_NAME} marketing.\n"
-        f"{BRAND_NAME} guides organisations through their AI journey, "
-        "deploying AI agents safely. It is not a freelancer.\n"
-        f"Goal: {goal}\nAudience: {audience}\n"
-        f"Services the caller asked about: {', '.join(wanted)}\n"
-        "Allowed services (use ONLY these, never invent one, never name a client):\n"
-        + "\n".join(f"- {s}" for s in SERVICES)
-        + "\n\nReturn ONLY this JSON, no other text:\n"
-        '{"objective": "...", "audience": "...", '
-        '"services": ["..."], "channel_mix": ["blog draft", "LinkedIn draft", '
-        '"presentation deck outline"], "kpis": ["..."], "outline": ["..."]}\n'
-        "Rules: kpis must include 'draft ready for human review (not published)' "
-        "and '0 banned claims'. Outline must have 4-6 items. Outline items are "
-        "slide headlines: short, at most 45 characters each, headline-style, "
-        "no trailing filler (e.g. 'Safe AI automation for small teams', not "
-        "'Introduction to the company and its role in AI journey guidance')."
-    )
+    prompt = planner_prompt(goal, audience, wanted)
     started = time.time()
     data = _generate(PLANNER_MODEL, prompt)
     plan_raw = _extract_json(data.get("response", ""))
@@ -241,36 +171,11 @@ class ResearchState(TypedDict, total=False):
 
 
 def retrieve_node(state: ResearchState):
-    _ensure_knowledge_base()
-    query = state["query"]
-    q_emb = _embed(query)
-    scored = []
-    for name in sorted(os.listdir(DOCS_DIR)):
-        if not name.endswith(".md"):
-            continue
-        with open(os.path.join(DOCS_DIR, name), encoding="utf-8") as f:
-            text = f.read().strip()
-        # One chunk per file for this step: docs are short on purpose.
-        score = _cosine(q_emb, _embed(text))
-        scored.append({"source": f"{DOCS_DIR}/{name}",
-                       "snippet": text, "score": round(score, 4)})
-    scored.sort(key=lambda r: r["score"], reverse=True)
-    return {"candidates": scored[:3]}
-
+    return {"candidates": retrieve(state["query"])}
 
 def synthesise_node(state: ResearchState):
     cands = state["candidates"]
-    context = "\n\n".join(
-        f"[{c['source']} | score {c['score']}] {c['snippet']}" for c in cands)
-    prompt = (
-        f"Summarise ONLY what the retrieved {BRAND_NAME} docs below say, "
-        "for the marketing plan. Do not add facts, clients, numbers or "
-        "claims that are not in the docs. If a doc does not cover a "
-        "point, say so instead of inventing it.\n\n"
-        f"Retrieved docs:\n{context}\n\n"
-        "Return 3-5 short bullet lines, each starting with its source "
-        "file name, e.g. '- services-ai.md: ...'"
-    )
+    prompt = synthesis_prompt(cands)
     started = time.time()
     data = _generate(SYNTH_MODEL, prompt)
     research = []
@@ -315,50 +220,9 @@ def researcher_node(state: MarketingState):
 BANNED_PHRASES = ["guaranteed roi", "no risk", "best-in-class", "unlimited"]
 
 def writer_node(state: MarketingState):
-    plan = state["plan"]
-    feedback = state.get("eval_feedback") or ""
-    feedback_block = (f"\n\nPrevious draft FAILED eval for these reasons, fix all of them "
-                      f"in this revision and do not repeat them:\n{feedback}\n"
-                      if feedback else "")
-    # Number the brand-doc research items only; synthesis is not a source.
-    docs = [r for r in state["research"] if r["source"].startswith(DOCS_PREFIX)]
-    numbered = "\n".join(
-        f"[{i+1}] {r['source']}: {r['snippet']}" for i, r in enumerate(docs))
-    prompt = (
-        f"You are the writer for {BRAND_NAME} marketing. Write a blog draft "
-        "in markdown, following this outline, using ONLY the research below.\n\n"
-        f"Objective: {plan['objective']}\n"
-        f"Audience: {plan['audience']}\n"
-        f"Outline:\n" + "\n".join(f"- {o}" for o in plan["outline"]) + "\n\n"
-        f"Research (cite these, and only these, by number):\n{numbered}\n\n"
-        "Rules, all mandatory:\n"
-        "1. CITATION RULE (strict): EVERY sentence that states something about "
-        "the brand, its services, its approach, or its market MUST end with a "
-        "numeric citation like [1] or [2] that points to the research list "
-        "above. No brand sentence without a citation, no exceptions.\n"
-        "2. ONE CLAIM PER SENTENCE: keep factual sentences short, at most "
-        "about 25 words each, so each one can carry its citation cleanly. "
-        "Do not pack three claims into one long uncited sentence.\n"
-        "3. REPEAT CITATIONS: cite the same source again in each new paragraph "
-        "and each new section. Citing once at the start and then writing "
-        "uncited paragraphs afterwards is a failure.\n"
-        "4. Keep purely structural text to a minimum: headings, and at most "
-        "two short intro sentences. Do not write a long uncited introduction "
-        "or conclusion.\n"
-        "5. Never invent a client, a number, a result, or a service.\n"
-        "6. Never use these banned phrases: guaranteed ROI, no risk, "
-        "best-in-class, unlimited (for outcomes).\n"
-        "7. End with a call to action that says the draft is for human "
-        "review only and is NOT published.\n"
-        "8. End the draft with a 'Sources' section listing [1], [2], ... "
-        "with their source file names.\n"
-        "9. NO REPEATED CLAIMS: each paragraph must make a different point. "
-        "Do not restate a claim from another paragraph in different words. "
-        "If one paragraph covers containers, Kubernetes and Docker, no other "
-        "paragraph may cover them; if one paragraph states the positioning, "
-        "no other paragraph may repeat it."
-        + feedback_block
-    )
+    plan = state['plan']
+    feedback = state.get('eval_feedback') or ''
+    prompt = writer_prompt(plan, state['research'], feedback)
     started = time.time()
     data = _generate(WRITER_MODEL, prompt)
     draft = data.get("response", "").strip()
@@ -454,205 +318,14 @@ def route_after_evals(state: MarketingState):
     return "writer"
 
 
-
-def _draft_sections(draft):
-    """Draft as a list of (heading, [paragraphs]) sections. The '# ' title,
-    the Sources section and the review footer are dropped. Paragraphs before
-    the first '## ' heading belong to heading None (the intro)."""
-    sections, cur, paras = [], [], []
-    heading, in_sources = None, False
-
-    def flush_para():
-        nonlocal cur, paras
-        if cur:
-            p = " ".join(cur)
-            if len(p) > 20:
-                paras.append(p)
-            cur = []
-
-    def flush_section():
-        nonlocal paras, heading
-        flush_para()
-        sections.append((heading, paras))
-        paras = []
-
-    for line in (draft or "").splitlines():
-        s = line.strip()
-        if s.startswith("# "):
-            continue
-        if s.startswith("## "):
-            if s.lower().startswith("## sources"):
-                in_sources = True
-            flush_section()
-            heading = s[3:].strip() if not in_sources else None
-            continue
-        if in_sources or s.startswith("---"):
-            continue
-        if "NOT published" in s and "human review" in s:
-            continue
-        if not s:
-            flush_para()
-        else:
-            cur.append(s)
-    flush_section()
-    return [(h, ps) for (h, ps) in sections if ps]
-
-
-def _draft_body_paragraphs(draft):
-    """Draft paragraphs minus the title, the Sources section and the review
-    footer. Kept for compatibility; _assign_paragraphs now uses sections."""
-    return [p for (_h, ps) in _draft_sections(draft) for p in ps]
-
-
-_STOPWORDS = {"using", "with", "and", "for", "the", "into", "your", "our"}
-
-
-def _keywords(text):
-    return {w for w in re.findall(r"[a-z0-9]+", text.lower())
-            if len(w) > 3 and w not in _STOPWORDS}
-
-
-def _best_match(text, outline):
-    """Outline item sharing the most keywords with text; (item, score)."""
-    tk = _keywords(text)
-    best, best_score = outline[0], 0
-    for item in outline:
-        score = len(_keywords(item) & tk)
-        if score > best_score:
-            best, best_score = item, score
-    return best, best_score
-
-
-def _assign_paragraphs(draft, outline):
-    """Give every draft paragraph to its slide. When the writer produced
-    ## sections (the norm since headlines became short, 5 Nov 2026), each
-    section goes to the outline item its heading matches best — overlap
-    between two short topical strings is far more reliable than matching a
-    long paragraph against a 3-keyword headline. The old paragraph-only
-    matching misfiled paragraphs onto the first slide (run-9a8b0e77: the
-    Power BI and Guided Implementation paragraphs both landed on slide 1,
-    slides 3 and 4 fell back to identical doc snippets, and
-    deck_slides_distinct failed twice). Paragraphs before the first heading
-    (the intro) and drafts without ## sections fall back to per-paragraph
-    keyword matching. Returns {outline item: [paragraphs]}.
-    No paragraph is dropped."""
-    assigned = {item: [] for item in outline}
-    sections = _draft_sections(draft)
-    has_headings = any(h for (h, _ps) in sections)
-    for heading, paras in sections:
-        if heading is None or not has_headings:
-            for p in paras:
-                best, _s = _best_match(p, outline)
-                assigned[best].append(p)
-        else:
-            best, score = _best_match(heading, outline)
-            if score == 0:
-                for p in paras:
-                    b2, _s2 = _best_match(p, outline)
-                    assigned[b2].append(p)
-            else:
-                assigned[best].extend(paras)
-    return assigned
-
-
-def _deck_slide_bodies(deck_path):
-    """Body text of each content slide (skips title + closing slides).
-    Title text is EXCLUDED on purpose: titles always differ, so including
-    them would let identical bodies pass. Only the body paragraphs count.
-    Returns [] when the deck cannot be read — the eval check then fails
-    instead of crashing the run."""
-    try:
-        from pptx import Presentation
-        prs = Presentation(deck_path)
-        bodies = []
-        for slide in list(prs.slides)[1:-1]:
-            title = slide.shapes.title
-            parts = []
-            for sh in slide.shapes:
-                if title is not None and sh.shape_id == title.shape_id:
-                    continue
-                if sh.has_text_frame:
-                    parts.append(sh.text_frame.text)
-            bodies.append("\n".join(parts))
-        return bodies
-    except Exception:
-        return []
-
-
-# ---- Deck node: PPTX from the plan outline, no new facts ----
-
-def _short(text, limit=200):
-    """Shorten to a whole word, never mid-word. Adds … when cut (5 Nov 2026:
-    the old [:200] slice ended lines mid-word on every content slide)."""
-    if len(text) <= limit:
-        return text
-    return text[:limit].rsplit(" ", 1)[0] + " …"
-
-
 def deck_node(state: MarketingState):
-    try:
-        from pptx import Presentation
-        from pptx.util import Pt
-    except ImportError as e:
-        raise RuntimeError("python-pptx is not installed in this venv. Run: pip install python-pptx, then re-run.") from e
     plan = state["plan"]
-    docs = [r for r in state["research"] if r["source"].startswith(DOCS_PREFIX)]
-    # Each slide carries its own draft paragraphs (5 Nov 2026 rework: the old
-    # version repeated the same three doc snippets on every slide, so all
-    # slides had identical content). A slide with no matching paragraph falls
-    # back to the doc snippets, so a run never ends with an empty slide.
-    assigned = _assign_paragraphs(state.get("draft") or "", plan["outline"])
-    os.makedirs("outputs", exist_ok=True)
-    deck_path = os.path.join("outputs", f"deck-{state.get('run_id', 'demo')}.pptx")
-    prs = Presentation()
-    # Title slide
-    slide = prs.slides.add_slide(prs.slide_layouts[0])
-    slide.shapes.title.text = BRAND_NAME
-    slide.placeholders[1].text = f"{plan['objective']}\n\nDRAFT — for human review only. NOT published."
-    # One slide per outline item, with its own draft paragraphs
-    fallback_slides = []
-    for item in plan["outline"]:
-        slide = prs.slides.add_slide(prs.slide_layouts[1])
-        # Titles: whole-word cut at 60 chars + 28pt. The default title font
-        # is ~44pt: a 70-80 char title wrapped to 3-4 lines, overflowed the
-        # title box and printed on top of the body (seen 5 Nov 2026).
-        slide.shapes.title.text = _short(item, 60)
-        title_tf = slide.shapes.title.text_frame
-        title_tf.word_wrap = True
-        title_tf.paragraphs[0].runs[0].font.size = Pt(28)
-        body = slide.placeholders[1].text_frame
-        body.word_wrap = True
-        # No repeated "Audience:" line: it sat exactly where the overflowing
-        # title landed, so the two printed on top of each other. The audience
-        # is already in the title slide's objective.
-        if assigned[item]:
-            # Full paragraphs, not cut at 280 chars: draft paragraphs are
-            # ~350 chars max and fit the body box at 14pt; cutting them left
-            # every slide ending in a dangling "..." (seen 5 Nov 2026).
-            # _short at 600 is a safety net only.
-            lines = [_short(p, 600) for p in assigned[item]]
-        else:
-            fallback_slides.append(item)
-            lines = [f"[{doc['source']}] {_short(doc['snippet'])}" for doc in docs]
-        body.text = lines[0]
-        body.paragraphs[0].font.size = Pt(14)
-        for line in lines[1:]:
-            para = body.add_paragraph()
-            para.text = line
-            para.font.size = Pt(14)
-    # Closing slide
-    slide = prs.slides.add_slide(prs.slide_layouts[1])
-    slide.shapes.title.text = "Next step: human review"
-    slide.placeholders[1].text = ("This deck is a draft from an evaluated draft. "
-                                  "Nothing in it is published until a human approves it.\n"
-                                  f"Services: {', '.join(plan['services'])}")
-    prs.save(deck_path)
+    deck_path, deck_slides, fallback_slides = build_deck(
+        plan, state["research"], state.get("draft") or "", state.get("run_id", "demo"))
     return {"deck_path": deck_path,
-            "deck_slides": 2 + len(plan["outline"]),  # title + one per outline item + closing
+            "deck_slides": deck_slides,
             "deck_fallback_slides": fallback_slides,
             "status": "deck_ready"}
-
-
 
 # ---- Approval interrupt + local publish (NOT real LinkedIn/WordPress) ----
 
@@ -669,19 +342,10 @@ def approve_node(state: MarketingState):
 
 
 def publish_node(state: MarketingState):
-    # Local publish stub ONLY: copy draft + deck into published/<run_id>/.
-    # No LinkedIn, no WordPress, no external call of any kind.
-    out_dir = os.path.join("published", state.get("run_id", "demo"))
-    os.makedirs(out_dir, exist_ok=True)
-    with open(os.path.join(out_dir, "draft.md"), "w", encoding="utf-8") as f:
-        f.write(state["draft"])
-    deck_src = state.get("deck_path")
-    if deck_src and os.path.exists(deck_src):
-        shutil.copy(deck_src, os.path.join(out_dir, os.path.basename(deck_src)))
+    publish(state["draft"], state.get("deck_path"), state.get("run_id", "demo"))
     return {"published": True,
             "publish_targets": ["local published/ folder"],
             "status": "published"}
-
 
 def rejected_node(state: MarketingState):
     # Human said no: nothing is published, and no published/ file is made.

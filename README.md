@@ -51,6 +51,41 @@ State is checkpointed to SQLite (`step7.db`, keyed by run id) after every
 step, so a killed process or container resumes the same run instead of
 restarting it — including a run paused at approval.
 
+## Two engines: LangGraph or ADK
+
+The same pipeline runs on two orchestrators, chosen with `--engine`
+(default `langgraph`). The paths differ ONLY in orchestration — the rules,
+prompts, retrieval, deck builder, eval checks and publish helper are shared
+code under `src/marketing_pipeline/`, and the ADK side (`src/marketing_adk/`)
+is thin wrappers around them.
+
+| | LangGraph | ADK |
+|---|---|---|
+| Orchestration | Explicit `StateGraph`, conditional edges | ADK `LlmAgent`s + `FunctionTool`s |
+| State | Checkpointed to SQLite, resumable | In-memory sessions, one-shot run |
+| Approval | `interrupt()` — run pauses, resumes on yes/no | App-orchestrated: the run asks, then publishes or rejects |
+| Models | Local Ollama only | Gemini first, local Ollama fallback when Google is down |
+| Eval retry | Graph edge, max 2 attempts | App loop, max 2 attempts |
+
+```bash
+# LangGraph (default): two phases, same run id
+PYTHONPATH=src .venv/bin/python -m marketing_pipeline.cli run demo
+PYTHONPATH=src .venv/bin/python -m marketing_pipeline.cli approve demo yes
+
+# ADK: one phase (approval happens inside the run)
+PYTHONPATH=src .venv/bin/python -m marketing_pipeline.cli run demo --engine adk
+PYTHONPATH=src .venv/bin/python -m marketing_pipeline.cli run demo --engine adk yes
+```
+
+ADK needs a Gemini API key for the Gemini leg (`GOOGLE_API_KEY`); set
+`ADK_MODEL_BACKEND=ollama` to skip Gemini entirely. Honest note from
+running it on local qwen3: tool-calling agents loop (the researcher and
+deck builder re-call their tool instead of answering), so the deterministic
+stages are anchored to the shared code — the tool result or a plain call
+supplies the answer when the agent loops. The pure-generation writer works
+directly in the ADK loop. The full agent loop is a Gemini job; the local
+path is for the Ollama fallback.
+
 ## Quickstart
 
 Prerequisites: Python 3.12 and [Ollama](https://ollama.com) running

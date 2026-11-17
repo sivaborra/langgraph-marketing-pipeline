@@ -19,6 +19,28 @@ PLANNER_MODEL = os.environ.get("OLLAMA_PLANNER_MODEL", "qwen3:14b")
 SYNTH_MODEL = os.environ.get("OLLAMA_SYNTH_MODEL", "qwen3:8b")
 WRITER_MODEL = os.environ.get("OLLAMA_WRITER_MODEL", "qwen3:14b")
 EMBED_MODEL = os.environ.get("OLLAMA_EMBED_MODEL", "bge-m3")
+
+
+# --- Engine selection: which orchestration runs the pipeline --------------
+# The two usage paths share the pipeline but generate with different
+# models: the LangGraph path uses local Ollama models, the ADK path uses
+# Gemini. Embeddings are always local bge-m3 - retrieval is shared, so
+# EMBED_MODEL is NOT conditional. Set ENGINE=adk (or --engine adk on the
+# CLI, Gate 9) to run the ADK path.
+ENGINE = os.environ.get("ENGINE", "langgraph")  # "langgraph" or "adk"
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+
+
+def generation_model(role):
+    """Model for a generation role ('planner', 'synth', 'writer').
+
+    Conditional on the active engine: Ollama models for the LangGraph
+    path, Gemini for the ADK path.
+    """
+    if ENGINE == "adk":
+        return GEMINI_MODEL
+    return {"planner": PLANNER_MODEL, "synth": SYNTH_MODEL, "writer": WRITER_MODEL}[role]
+
 # Context window for generation calls. 2048 is enough for the small prompts
 # used here and keeps a 14b model inside a 12 GB GPU; raise it only if you
 # have the VRAM for it.
