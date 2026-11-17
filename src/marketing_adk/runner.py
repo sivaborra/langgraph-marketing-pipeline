@@ -18,19 +18,6 @@ async def _collect(runner, user_id, session_id, content, events):
     text = ""
     async for event in runner.run_async(user_id=user_id, session_id=session_id, new_message=content):
         events.append(event)
-        # One line per event, printed as it arrives, so a mid-run abort
-        # still shows how far the run got (tool call? tool result? text?).
-        if event.content and event.content.parts:
-            for part in event.content.parts:
-                fc = getattr(part, "function_call", None)
-                fr = getattr(part, "function_response", None)
-                t = getattr(part, "text", None)
-                if fc is not None:
-                    print(f"[event] tool call: {fc.name} args={fc.args}")
-                elif fr is not None:
-                    print(f"[event] tool result: {fr.name}")
-                elif t:
-                    print(f"[event] text ({len(t)} chars): {t[:150]!r}")
         if event.is_final_response() and event.content and event.content.parts:
             text = "".join(p.text or "" for p in event.content.parts)
     return text
