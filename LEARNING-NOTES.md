@@ -1,6 +1,6 @@
 # LangGraph Learnings — Notes
 
-Date: 17 Nov 2026. Written after the overnight gh-aw port of the marketing pipeline
+Date: 17 Nov 2026; MCP section added 24 Nov 2026. Written after the overnight gh-aw port of the marketing pipeline
 and the morning verification. The whole point of this exercise: learn, by building,
 where each orchestration tool fits — and where it doesn't.
 
@@ -193,6 +193,98 @@ ADK_MODEL_BACKEND=ollama PYTHONPATH=src .venv/bin/python -m marketing_pipeline.c
 - ADK has no `interrupt()` and no checkpoint/resume. Approval is app-orchestrated
   between runner calls, and the ADK run is one-shot. If you need resume-after-
   approval, that is LangGraph's job.
+
+## Exposing the eval as an MCP service — the guide
+
+Added 24 Nov 2026. The repo now covers four things: LangGraph orchestration,
+ADK orchestration, gh-aw workflows, and MCP service exposure. MCP is not a
+fifth orchestrator. It is the protocol that lets another app call one piece of
+the pipeline — the eval — without the pipeline code.
+
+The point: another department or company can run the eval the way they want.
+They generate a draft and a deck however they like, call the service before
+publish, and get the same 9 checks, the same pass or fail, and the same
+feedback the pipeline gets. The generator does not matter. The gate is the
+same for every caller.
+
+### The design: one pure function, one tool
+
+- **The eval is a pure function now.** Gate 1 extracted the 9 checks verbatim
+  from `evals_node` into `src/marketing_pipeline/evaluate.py`:
+  `evaluate(draft, research_docs, deck_bodies)`. No new checks, no changed
+  thresholds. `evals_node` in `graph.py` is a thin wrapper — attempts and
+  status stay in the graph, the `evals` dict keeps its exact old shape.
+- **One design point that matters:** the 9th check used to read deck slides
+  from a local file path. A remote caller has no such path, so the service
+  takes deck slide *bodies* as input, not a path. Only the graph wrapper
+  reads the file.
+- **One tool, over stdio.** `mcp-eval-service/server.py` exposes
+  `evaluate_marketing_draft(draft, research_docs, deck_bodies, credential)`
+  and returns the result as a JSON string. No network port, no HTTP in this
+  version. The client spawns the server as a subprocess and talks to it over
+  standard in and out.
+- **mcp 2.3.0 is the v2 API.** FastMCP is gone. The server uses `MCPServer`
+  from `mcp.server.mcpserver` and `mcp.run()` (stdio by default).
+
+### File map
+
+- `src/marketing_pipeline/evaluate.py` — the pure 9-check function (Gate 1).
+- `src/marketing_pipeline/graph.py` — `evals_node` wrapper around it.
+- `mcp-eval-service/server.py` — MCP server, one tool (Gate 2).
+- `mcp-eval-service/client.py` — round-trip test client (Gate 3).
+- `mcp-eval-service/auth.py` — token mint and verify, stdlib only (Gate 4).
+- `mcp-eval-service/issue_token.py` — the issuer: mints short-lived tokens (Gate 4).
+- `requirements.txt` — now includes `mcp==2.3.0`.
+- `docs/mcp-eval-service-flow.pdf` — the flow doc: diagrams, the 9 checks,
+  gates, commands, real outputs.
+
+### Gate 4: per-call auth (24 Nov 2026)
+
+Siva's rule from 23 Nov: each tool, before it executes, authorises the session
+and makes sure it is still valid — not expired, not revoked, scopes cover the
+tool. Checked on every call, not once at connect.
+
+- Every call to `evaluate_marketing_draft` must carry a credential. The server
+  verifies it before the tool runs, on every call, in this order: present,
+  signature valid, scope covers the tool, not expired. Any failure and the
+  tool does not run — it returns `{"error": "unauthorized: <reason>"}`.
+- The token stands in for an OAuth access token: `base64url(json) .
+  base64url(hmac-sha256)`, payload `{"scope": <tool name>, "exp": <unix
+  time>}`, 5-minute life, HMAC-signed with a server-side secret
+  (`MCP_EVAL_SECRET`). `issue_token.py` mints it and stands in for the OAuth
+  authorization server. No new dependencies.
+- Verified 24 Nov: 8 cases end to end. Valid ran (9/9, coverage 1.0). No
+  credential, expired credential, an `--expired` issuer token, wrong scope,
+  tampered signature, malformed token, and a token minted with a different
+  secret were all refused. The server with no `MCP_EVAL_SECRET` set fails
+  fast (exit 1) instead of starting open.
+- Honest boundary: this is the per-call check demo, not a full OAuth server.
+  Full OAuth needs the HTTP transport plus an authorization server. That is
+  a later step, not this one.
+
+### How to run it
+
+From the repo root on AIBeast, in the lab venv:
+
+export MCP_EVAL_SECRET=$(openssl rand -hex 16)
+~/langgraph-lab/.venv/bin/python mcp-eval-service/issue_token.py
+~/langgraph-lab/.venv/bin/python mcp-eval-service/client.py
+
+The client lists the tool, then calls it four times with a passing draft: no
+credential (refused), valid credential (passed True), expired credential
+(refused), wrong scope (refused).
+
+### Honest limits (what the eval proves, and what it doesn't)
+
+- The checks prove the *form*, not the truth. A draft can cite real docs and
+  still misstate what they say. The eval catches uncited and badly cited
+  claims. It does not catch a wrong claim that happens to carry a valid
+  citation number.
+- Stdio only. No HTTP transport, no remote server in this version.
+- `scripts/eval_draft.py` still duplicates the same 9 checks. Untouched in
+  this work; it is a later cleanup.
+- The `mcp-gate1` pipeline run is still paused at approve on AIBeast.
+  Do not approve or publish it unless Siva says so.
 
 ## 1. The three tools, in one picture
 
